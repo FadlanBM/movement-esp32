@@ -1,10 +1,10 @@
 #include <ESP32Servo.h>
 
 // Motor pins
-int motor1Pin1 = 26;
-int motor1Pin2 = 25;
-int motor2Pin1 = 33;
-int motor2Pin2 = 32;
+int motor1Pin1 = 25;
+int motor1Pin2 = 26;
+int motor2Pin1 = 32;
+int motor2Pin2 = 33;
 
 // PWM channels for motor control
 const int pwmChannelA1 = 0;
@@ -13,9 +13,12 @@ const int pwmChannelB1 = 2;
 const int pwmChannelB2 = 3;
 
 // Ultrasonic sensor and servo pins
-#define TRIG_PIN 5
-#define ECHO_PIN 18
-#define servoPin 4
+#define TRIG_PIN 12
+#define ECHO_PIN 14
+#define servoPin 27
+
+// Servo PWM channel (gunakan channel yang tidak bentrok)
+#define SERVO_CHANNEL 8
 
 // Distance thresholds (in cm)
 #define OBSTACLE_THRESHOLD 20
@@ -142,20 +145,125 @@ void scanSurroundings() {
   lastScanTime = millis();
 }
 
-// Function to perform turning maneuver
+// Function to scan with servo and move robot to safe direction
 void performTurn(String direction) {
-  Serial.println("Turning " + direction);
+  Serial.println("Scanning " + direction + " - Robot will move after scan");
+
+  // Robot berhenti total untuk scanning
+  stopMotor();
+  delay(300); // Tunggu robot benar-benar berhenti
+
+  int safeDistance = OBSTACLE_THRESHOLD + 10; // Jarak aman yang lebih besar
+  bool foundSafePath = false;
 
   if (direction == "left") {
-    left(TURN_SPEED);
-    delay(800); // Adjust duration for 90-degree turn
+    // Servo scan ke kiri (180 derajat)
+    servoSensor.write(180);
+    delay(1000);
+
+    int leftDist = measureDistance();
+    Serial.print("Left scan distance: ");
+    Serial.print(leftDist);
+    Serial.println(" cm");
+
+    // Kembalikan servo ke tengah
+    servoSensor.write(90);
+    delay(500);
+
+    // Jika aman di kiri, gerakkan robot ke kiri
+    if (leftDist > safeDistance) {
+      Serial.println("Left path safe - Turning robot left");
+      left(TURN_SPEED);
+      delay(800); // Durasi putaran 90 derajat
+      stopMotor();
+      foundSafePath = true;
+    }
+
   } else if (direction == "right") {
-    right(TURN_SPEED);
-    delay(800); // Adjust duration for 90-degree turn
+    // Servo scan ke kanan (0 derajat)
+    servoSensor.write(0);
+    delay(1000);
+
+    int rightDist = measureDistance();
+    Serial.print("Right scan distance: ");
+    Serial.print(rightDist);
+    Serial.println(" cm");
+
+    // Kembalikan servo ke tengah
+    servoSensor.write(90);
+    delay(500);
+
+    // Jika aman di kanan, gerakkan robot ke kanan
+    if (rightDist > safeDistance) {
+      Serial.println("Right path safe - Turning robot right");
+      right(TURN_SPEED);
+      delay(800); // Durasi putaran 90 derajat
+      stopMotor();
+      foundSafePath = true;
+    }
   }
 
+  if (!foundSafePath) {
+    Serial.println("No safe path found in scanned direction");
+    // Robot tetap berhenti dan akan melakukan scanning lagi
+  }
+}
+
+// Fungsi baru: scanning komprehensif dengan servo
+void scanAndFindSafePath() {
+  Serial.println("Comprehensive servo scanning - Finding safe path");
   stopMotor();
-  delay(200);
+  delay(500);
+
+  // Scan kiri
+  servoSensor.write(180);
+  delay(1000);
+  int leftDist = measureDistance();
+  Serial.print("Left: ");
+  Serial.print(leftDist);
+  Serial.println(" cm");
+
+  // Scan tengah
+  servoSensor.write(90);
+  delay(500);
+  int centerDist = measureDistance();
+  Serial.print("Center: ");
+  Serial.print(centerDist);
+  Serial.println(" cm");
+
+  // Scan kanan
+  servoSensor.write(0);
+  delay(1000);
+  int rightDist = measureDistance();
+  Serial.print("Right: ");
+  Serial.print(rightDist);
+  Serial.println(" cm");
+
+  // Kembali ke tengah
+  servoSensor.write(90);
+  delay(500);
+
+  int safeDistance = OBSTACLE_THRESHOLD + 10;
+
+  // Prioritaskan jalan yang paling aman
+  if (rightDist > safeDistance && rightDist >= leftDist) {
+    Serial.println("Turning right (safest path)");
+    right(TURN_SPEED);
+    delay(800);
+    stopMotor();
+  } else if (leftDist > safeDistance) {
+    Serial.println("Turning left (safest path)");
+    left(TURN_SPEED);
+    delay(800);
+    stopMotor();
+  } else {
+    Serial.println("No safe path - All directions blocked");
+    backward(REVERSE_SPEED);
+    delay(1000);
+    stopMotor();
+  }
+
+  scanningComplete = false;
 }
 
 // Function to reverse and re-evaluate
@@ -174,8 +282,9 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Robot Obstacle Avoidance System Starting...");
 
-  // Initialize servo
-  servoSensor.attach(servoPin);
+  // Initialize servo dengan channel yang ditentukan
+  servoSensor.setPeriodHertz(50); // Standard 50hz servo
+  servoSensor.attach(servoPin, SERVO_CHANNEL, 500, 2400); // Min=500us, Max=2400us
   servoSensor.write(90);
   potitionServo = 90;
 
@@ -196,10 +305,10 @@ void setup() {
   ledcSetup(pwmChannelB2, 5000, 8);
 
   // Attach PWM channels to motor pins
-  ledcAttachPin(motor1Pin1, pwmChannelA1);
-  ledcAttachPin(motor1Pin2, pwmChannelA2);
-  ledcAttachPin(motor2Pin1, pwmChannelB1);
-  ledcAttachPin(motor2Pin2, pwmChannelB2);
+  ledcAttach(motor1Pin1, pwmChannelA1);
+  ledcAttach(motor1Pin2, pwmChannelA2);
+  ledcAttach(motor2Pin1, pwmChannelB1);
+  ledcAttach(motor2Pin2, pwmChannelB2);
 
   // Initialize robot state
   obstacleFront = false;
@@ -229,28 +338,10 @@ void loop() {
       scanSurroundings();
     }
 
-    // Step 4: Decision making based on scan results
+    // Step 4: Gunakan scanning komprehensif dengan servo
     if (obstacleFront) {
-      if (obstacleRight && !obstacleLeft) {
-        // Right side blocked but left side clear: turn left
-        Serial.println("Right blocked, left clear -> Turning left");
-        performTurn("left");
-        scanningComplete = false; // Reset for next scan
-      } else if (obstacleLeft && !obstacleRight) {
-        // Left side blocked but right side clear: turn right
-        Serial.println("Left blocked, right clear -> Turning right");
-        performTurn("right");
-        scanningComplete = false; // Reset for next scan
-      } else if (obstacleLeft && obstacleRight) {
-        // Both right and left sides blocked, and still obstacle in front: reverse
-        Serial.println("Both sides blocked, front still blocked -> Reversing");
-        reverseAndRecheck();
-      } else if (!obstacleLeft && !obstacleRight) {
-        // Both sides clear - prefer turning right (or could choose based on other logic)
-        Serial.println("Both sides clear - Choosing to turn right");
-        performTurn("right");
-        scanningComplete = false; // Reset for next scan
-      }
+      Serial.println("Obstacle detected! Using servo to find safe path...");
+      scanAndFindSafePath();
     }
   } else {
     // No obstacle in front, move forward
